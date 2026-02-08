@@ -5,8 +5,6 @@ const PROTOC_INCLUDE: &str = "PROTOC_INCLUDE";
 const PROTO_ROOT: &str = "proto";
 const PROTO_FILES: &[&str] = &[
     "proto/arpc.proto",
-    "proto/events.proto",
-    "proto/publisher.proto",
     "proto/shredstream.proto",
     "proto/shreder.proto",
     "proto/jetstream.proto",

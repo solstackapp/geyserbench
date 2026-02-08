@@ -1,15 +1,15 @@
-use std::{error::Error, sync::atomic::Ordering};
+use std::{error::Error, sync::atomic::Ordering, time::Duration};
 
 use crate::{
     config::{Config, Endpoint},
     utils::{TransactionData, get_current_timestamp, open_log_file, write_log_entry},
 };
-use futures_util::stream::StreamExt;
 
-use prost::Message;
+use futures_util::StreamExt;
 use solana_pubkey::Pubkey;
+use thorstreamer_grpc_client::{ClientConfig, ThorClient, parse_message};
+use thorstreamer_grpc_client::proto::thor_streamer::types::message_wrapper::EventMessage;
 use tokio::task;
-use tonic::{Request, Streaming, metadata::MetadataValue, transport::Channel};
 use tracing::{Level, info};
 
 use super::{
@@ -18,19 +18,6 @@ use super::{
         TransactionAccumulator, build_signature_envelope, enqueue_signature, fatal_connection_error,
     },
 };
-
-#[allow(clippy::all, dead_code)]
-pub mod thor_streamer {
-    include!(concat!(env!("OUT_DIR"), "/thor_streamer.types.rs"));
-}
-
-#[allow(clippy::all, dead_code)]
-pub mod publisher {
-    include!(concat!(env!("OUT_DIR"), "/publisher.rs"));
-}
-
-use publisher::{StreamResponse, event_publisher_client::EventPublisherClient};
-use thor_streamer::{MessageWrapper, message_wrapper::EventMessage};
 
 pub struct ThorProvider;
 
@@ -74,40 +61,25 @@ async fn process_thor_endpoint(
     };
 
     let endpoint_url = endpoint.url.clone();
-    let auth_header = endpoint
-        .x_token
-        .as_ref()
-        .map(|token| token.trim())
-        .filter(|token| !token.is_empty())
-        .map(|token| {
-            MetadataValue::try_from(token)
-                .unwrap_or_else(|err| fatal_connection_error(&endpoint_name, err))
-        });
 
     info!(endpoint = %endpoint_name, url = %endpoint_url, "Connecting");
 
-    // Connect to the gRPC server
-    let uri = endpoint_url
-        .parse::<tonic::transport::Uri>()
-        .unwrap_or_else(|err| fatal_connection_error(&endpoint_name, err));
-    let channel = Channel::from_shared(uri.to_string())
-        .unwrap_or_else(|err| fatal_connection_error(&endpoint_name, err))
-        .connect()
+    let client_config = ClientConfig {
+        server_addr: endpoint_url.clone(),
+        token: endpoint.x_token.clone().unwrap_or_default(),
+        timeout: Duration::from_secs(30),
+    };
+
+    let mut client = ThorClient::new(client_config)
         .await
         .unwrap_or_else(|err| fatal_connection_error(&endpoint_name, err));
-    let mut publisher_client =
-        EventPublisherClient::with_interceptor(channel, move |mut req: Request<()>| {
-            if let Some(ref token) = auth_header {
-                req.metadata_mut().insert("authorization", token.clone());
-            }
-            Ok(req)
-        });
+
     info!(endpoint = %endpoint_name, "Connected");
 
-    let mut stream: Streaming<StreamResponse> = publisher_client
-        .subscribe_to_transactions(())
-        .await?
-        .into_inner();
+    let mut stream = client
+        .subscribe_to_transactions()
+        .await
+        .unwrap_or_else(|err| fatal_connection_error(&endpoint_name, err));
 
     let mut accumulator = TransactionAccumulator::new();
     let mut transaction_count = 0usize;
@@ -121,11 +93,13 @@ async fn process_thor_endpoint(
 
             message = stream.next() => {
                 let Some(Ok(msg)) = message else { continue };
-                let Ok(message_wrapper) = MessageWrapper::decode(&*msg.data) else { continue };
+                let Ok(message_wrapper) = parse_message(&msg.data) else { continue };
                 let Some(EventMessage::Transaction(transaction_event_wrapper)) = message_wrapper.event_message else { continue };
-                let Some(transaction_event) = transaction_event_wrapper.transaction else { continue };
-                let Some(transaction) = transaction_event.transaction.as_ref() else { continue };
+                let Some(transaction) = transaction_event_wrapper.transaction.as_ref() else { continue };
                 let Some(message) = transaction.message.as_ref() else { continue };
+
+                // Get signature from the first signature in the transaction
+                let Some(sig_bytes) = transaction.signatures.first() else { continue };
 
                 let has_account = message
                     .account_keys
@@ -135,7 +109,7 @@ async fn process_thor_endpoint(
                 if has_account {
                     let wallclock = get_current_timestamp();
                     let elapsed = start_instant.elapsed();
-                    let signature = bs58::encode(&transaction_event.signature).into_string();
+                    let signature = bs58::encode(sig_bytes).into_string();
 
                     if let Some(file) = log_file.as_mut() {
                         write_log_entry(file, wallclock, &endpoint_name, &signature)?;
