@@ -558,10 +558,17 @@ impl BackendConfigPayload {
 
 impl BackendEndpointPayload {
     fn from_endpoint(endpoint: &Endpoint, provided_ip: Option<String>) -> Self {
+        let (kind_str, url) = match endpoint.kind {
+            // Backend doesn't know UDP variant: map kind and wrap bare socket addr as URL
+            crate::config::EndpointKind::UdpShredstream => {
+                ("shredstream", format!("udp://{}", endpoint.url))
+            }
+            _ => (endpoint.kind.as_str(), endpoint.url.clone()),
+        };
         Self {
             name: endpoint.name.clone(),
-            url: endpoint.url.clone(),
-            kind: Some(endpoint.kind.as_str().to_string()),
+            url,
+            kind: Some(kind_str.to_string()),
             resolved_ip: provided_ip,
         }
     }
@@ -577,6 +584,13 @@ async fn build_endpoint_payloads(endpoints: &[Endpoint]) -> Vec<BackendEndpointP
 }
 
 async fn resolve_endpoint_ip(endpoint: &Endpoint) -> Option<String> {
+    // UDP endpoints use bare socket addresses (e.g. "127.0.0.1:8001"), not URLs
+    if matches!(endpoint.kind, crate::config::EndpointKind::UdpShredstream) {
+        return endpoint.url.parse::<std::net::SocketAddr>()
+            .ok()
+            .map(|addr| addr.ip().to_string());
+    }
+
     let parsed = match Url::parse(&endpoint.url) {
         Ok(url) => url,
         Err(err) => {
