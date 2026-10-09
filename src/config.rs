@@ -48,6 +48,8 @@ pub enum EndpointKind {
     Shredstream,
     Shreder,
     Jetstream,
+    #[serde(alias = "udpshredstream")]
+    UdpShredstream,
 }
 
 #[derive(Debug, Clone, Copy, Default, Deserialize, Serialize)]
@@ -88,6 +90,7 @@ impl EndpointKind {
             EndpointKind::Shredstream => "shredstream",
             EndpointKind::Shreder => "shreder",
             EndpointKind::Jetstream => "jetstream",
+            EndpointKind::UdpShredstream => "udpshredstream",
         }
     }
 }

@@ -1,3 +1,6 @@
+#[global_allocator]
+static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
 pub use {
     bs58,
     bytes::Bytes,
@@ -18,6 +21,7 @@ pub use {
 mod analysis;
 mod backend;
 mod config;
+mod deshred;
 mod proto;
 mod providers;
 mod utils;
@@ -276,6 +280,22 @@ async fn main() -> Result<()> {
         None
     };
 
+    // Drain the forwarder before backend finalization so all queued signatures are sent
+    let _ = signature_queues.take();
+    if let Some(stop) = forwarder_stop.as_ref() {
+        stop.store(true, Ordering::Release);
+    }
+    if let Some(join) = signature_forwarder.take()
+        && let Err(err) = join.join()
+    {
+        warn!(
+            "Signature forwarder thread terminated unexpectedly: {:?}",
+            err
+        );
+    }
+
+    let signatures_collected = shared_counter.load(Ordering::Acquire);
+
     if let Some(handle) = backend_handle {
         if run_aborted {
             if let Some(run_id) = backend_run_id.as_ref() {
@@ -284,10 +304,19 @@ async fn main() -> Result<()> {
                 info!("Skipping backend finalisation due to user abort");
             }
             // Dropping the handle without calling finish() prevents the backend run from being saved.
+        } else if signatures_collected == 0 {
+            let run_id = backend_run_id
+                .clone()
+                .unwrap_or_else(|| "unknown".to_string());
+            warn!(
+                run_id = %run_id,
+                "Skipping backend finalisation: no signatures were forwarded (all endpoints must observe the same transaction)"
+            );
         } else {
             let run_id = backend_run_id
                 .clone()
                 .unwrap_or_else(|| "unknown".to_string());
+            info!(run_id = %run_id, signatures = signatures_collected, "Finalising backend stream");
             match handle.finish().await {
                 Ok(result) => {
                     info!(run_id = %run_id, "Backend completed run");
@@ -298,20 +327,6 @@ async fn main() -> Result<()> {
                 }
             }
         }
-    }
-
-    let _ = signature_queues.take();
-    if let Some(stop) = forwarder_stop.as_ref() {
-        stop.store(true, Ordering::Release);
-    }
-
-    if let Some(join) = signature_forwarder
-        && let Err(err) = join.join()
-    {
-        warn!(
-            "Signature forwarder thread terminated unexpectedly: {:?}",
-            err
-        );
     }
 
     if !run_aborted {
