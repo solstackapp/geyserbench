@@ -21,8 +21,10 @@ solana-entry = "2"
 solana-pubkey = "2"
 solana-sdk = "=2.2.1"
 
-# UDP shred reconstruction dependencies
-solana-ledger = { git = "https://github.com/jito-foundation/jito-solana.git", branch = "eric/v2.2-merkle-recovery" }
+# UDP shred reconstruction dependencies.
+# jito-solana fork that exposes merkle shred recovery; pinned to the commit that
+# jito-labs/shredstream-proxy locks, since its `eric/v2.2-merkle-recovery` branch was deleted.
+solana-ledger = { git = "https://github.com/jito-foundation/jito-solana.git", rev = "cafa3ba4d4c6c3702d13545d9b434861ebc06036" }
 solana-perf = "=2.2.1"
 solana-streamer = "=2.2.1"
 solana-net-utils = "=2.2.1"
