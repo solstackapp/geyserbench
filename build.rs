@@ -12,6 +12,12 @@ const PROTO_FILES: &[&str] = &[
     "proto/solana-storage.proto",
 ];
 
+// aRPC v3 shares the `arpc` proto package with `proto/arpc.proto` (the package is
+// part of the gRPC method path), so it is generated into its own directory to
+// keep both `arpc.rs` outputs apart.
+const ARPCV3_PROTO: &str = "proto/arpcv3.proto";
+const ARPCV3_OUT_DIR: &str = "arpcv3";
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rerun-if-env-changed=PROTOC");
     println!("cargo:rerun-if-env-changed=PROTOC_INCLUDE");
@@ -25,6 +31,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     tonic_prost_build::configure()
         .file_descriptor_set_path(out_dir.join("proto_descriptors.bin"))
         .compile_protos(PROTO_FILES, &includes)?;
+
+    let arpcv3_out_dir = out_dir.join(ARPCV3_OUT_DIR);
+    std::fs::create_dir_all(&arpcv3_out_dir)?;
+    tonic_prost_build::configure()
+        .out_dir(arpcv3_out_dir)
+        .compile_protos(&[ARPCV3_PROTO], &includes)?;
 
     Ok(())
 }

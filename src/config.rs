@@ -44,6 +44,7 @@ pub struct BackendSettings {
 pub enum EndpointKind {
     Yellowstone,
     Arpc,
+    ArpcV3,
     Thor,
     Shredstream,
     Shreder,
@@ -86,6 +87,7 @@ impl EndpointKind {
         match self {
             EndpointKind::Yellowstone => "yellowstone",
             EndpointKind::Arpc => "arpc",
+            EndpointKind::ArpcV3 => "arpcv3",
             EndpointKind::Thor => "thor",
             EndpointKind::Shredstream => "shredstream",
             EndpointKind::Shreder => "shreder",

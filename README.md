@@ -68,7 +68,7 @@ kind = "yellowstone"
 - `config.transactions` sets how many signatures to evaluate (backend streaming automatically disables itself for extremely large runs).
 - `config.account` is the pubkey monitored for transactions during the benchmark.
 - `config.commitment` accepts `processed`, `confirmed`, or `finalized`.
-- Repeat `[[endpoint]]` blocks for each feed. Supported `kind` values: `yellowstone`, `arpc`, `thor`, `shredstream`, `shreder`, and `jetstream`. `x_token` is optional.
+- Repeat `[[endpoint]]` blocks for each feed. Supported `kind` values: `yellowstone`, `arpc`, `arpcv3`, `thor`, `shredstream`, `shreder`, and `jetstream`. `x_token` is optional.
 
 ## CLI Options
 

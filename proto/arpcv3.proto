@@ -1,0 +1,289 @@
+syntax = "proto3";
+
+package arpc;
+
+// aRPC streams transactions, entries, slot status, and control messages over a
+// single bidirectional Subscribe stream.
+service aRPC {
+  rpc Subscribe(stream ClientMessage) returns (stream ServerMessage);
+}
+
+message ClientMessage {
+  reserved 1, 5;
+  reserved "resume", "config";
+
+  oneof msg {
+    SubscriptionRequest subscribe = 2; // add or replace a sub_id
+    Unsubscribe unsubscribe = 3;
+    Ping ping = 4;
+  }
+}
+
+enum OnLag {
+  ON_LAG_CLOSE = 0; // close the stream with DATA_LOSS "lagged"
+  ON_LAG_SKIP_TO_LIVE = 1; // jump the cursor to head and emit a GapNotice
+  ON_LAG_CONFLATE = 2; // slot-status subs keep latest per slot; data subs skip to live
+}
+
+message Unsubscribe {
+  uint32 sub_id = 1; // the sub_id (0..63) to tear down
+}
+
+message Ping {
+  uint64 id = 1; // echoed back in Pong for RTT measurement
+}
+
+message SubscriptionRequest {
+  reserved 5;
+  reserved "policy";
+
+  uint32 sub_id = 1; // client-chosen, 0..63
+
+  oneof kind {
+    TransactionSubscription transactions = 2;
+    EntrySubscription entries = 3;
+    SlotSubscription slots = 4;
+  }
+}
+
+message TransactionSubscription {
+  reserved 6;
+
+  repeated bytes account_include = 1; // raw 32-byte account keys
+  repeated bytes account_exclude = 2;
+  repeated bytes account_required = 3;
+  bool exclude_votes = 4;
+  TransactionEncoding encoding = 5;
+}
+
+enum TransactionEncoding {
+  TRANSACTION_ENCODING_BINARY = 0; // exact transaction wire bytes
+  TRANSACTION_ENCODING_DECODED = 1; // parsed transaction with LUT-resolved addresses
+}
+
+message EntrySubscription {
+  EntryMetadataFilter metadata = 1;
+}
+
+message EntryMetadataFilter {
+  optional uint32 min_transaction_count = 1;
+  optional uint32 max_transaction_count = 2;
+  optional uint32 min_signature_count = 3;
+  optional uint32 max_signature_count = 4;
+  optional bool include_tick_entries = 5;
+  optional bool include_non_tick_entries = 6;
+}
+
+message SlotSubscription {
+  bool include_dead = 1;
+  bool include_complete = 2;
+  bool include_first_shred = 3;
+}
+
+message ServerMessage {
+  reserved 16;
+
+  uint64 matched_subs = 1;
+  fixed64 conn_seq = 17;
+  fixed64 seq = 2;
+  fixed64 created_at_ns = 3;
+  uint32 provenance = 4;
+
+  oneof payload {
+    BinaryTransaction binary_transaction = 5;
+    DecodedTransaction decoded_transaction = 6;
+    Entry entry = 7;
+    SlotStatusUpdate slot = 8;
+    SlotRetract retract = 9;
+    Pong pong = 10;
+    SubscribeAck ack = 11;
+    StreamError error = 12;
+    Heartbeat heartbeat = 13;
+    ReplayComplete replay_done = 14;
+    GapNotice gap = 15;
+  }
+}
+
+enum SlotStatus {
+  SLOT_STATUS_ALIVE = 0;
+  SLOT_STATUS_FIRST_SHRED = 1;
+  SLOT_STATUS_COMPLETE = 2;
+  SLOT_STATUS_DEAD = 3;
+
+  // Reserved for future consensus statuses.
+  reserved 8, 9;
+}
+
+// A transaction as exact wire bytes plus its primary signature and position.
+message BinaryTransaction {
+  uint64 slot = 1;
+  uint32 batch_index = 2;
+  uint32 entry_index = 3;
+  uint32 tx_index = 4;
+  bytes signature = 5;
+  bytes transaction = 6;
+}
+
+// A parsed transaction with LUT-resolved loaded addresses.
+message DecodedTransaction {
+  uint64 slot = 1;
+  uint32 batch_index = 2;
+  uint32 entry_index = 3;
+  uint32 tx_index = 4;
+  bytes signature = 5;
+  Transaction transaction = 6;
+
+  // True when at least one LUT-referenced account key was unresolved.
+  bool lut_miss = 7;
+}
+
+message Transaction {
+  repeated bytes signatures = 1;
+  Message message = 2;
+  bool is_vote = 3;
+  bytes fee_payer = 4;
+}
+
+message Message {
+  MessageHeader header = 1;
+  repeated bytes account_keys = 2;
+  bytes recent_blockhash = 3;
+  repeated CompiledInstruction instructions = 4;
+  repeated MessageAddressTableLookup address_table_lookups = 5;
+  repeated bytes loaded_writable_addresses = 6;
+  repeated bytes loaded_readonly_addresses = 7;
+  TransactionVersion transaction_version = 8;
+
+  // Present only for v1 transactions.
+  TransactionConfig transaction_config = 9;
+}
+
+message MessageHeader {
+  uint32 num_required_signatures = 1;
+  uint32 num_readonly_signed_accounts = 2;
+  uint32 num_readonly_unsigned_accounts = 3;
+}
+
+message CompiledInstruction {
+  uint32 program_id_index = 1;
+  bytes accounts = 2;
+  bytes data = 3;
+}
+
+message MessageAddressTableLookup {
+  bytes account_key = 1;
+  bytes writable_indexes = 2;
+  bytes readonly_indexes = 3;
+}
+
+message Entry {
+  uint64 slot = 1;
+  uint32 batch_index = 2;
+  uint32 entry_index = 3;
+
+  // Exact leader-signed bincode entry bytes.
+  bytes data = 4;
+
+  uint32 tx_count = 5;
+  uint32 sig_count = 6;
+  bool tick_only = 7;
+  bool is_last_in_slot = 8;
+}
+
+message SlotStatusUpdate {
+  uint64 slot = 1;
+  SlotStatus status = 2;
+
+  // Raw 32-byte leader public key. Empty when unknown.
+  bytes leader = 3;
+}
+
+// Instructs clients to discard everything previously delivered for a slot.
+message SlotRetract {
+  uint64 slot = 1;
+  RetractReason reason = 2;
+}
+
+enum RetractReason {
+  RETRACT_REASON_UNSPECIFIED = 0;
+  RETRACT_REASON_DEAD = 1;
+  RETRACT_REASON_EQUIVOCATION = 2;
+  RETRACT_REASON_VERIFY_FAILED = 3;
+}
+
+message Pong {
+  uint64 id = 1; // echoes Ping.id
+}
+
+message SubscribeAck {
+  uint32 sub_id = 1;
+  bool accepted = 2;
+  AckReason reason = 3;
+}
+
+enum AckReason {
+  reserved 9, 10;
+
+  ACK_REASON_NONE = 0;
+  ACK_REASON_INVALID_SUB_ID = 1;
+  ACK_REASON_INVALID_FILTER = 2;
+  ACK_REASON_MAX_KEYS_PER_SUB = 3;
+  ACK_REASON_MAX_KEYS_PER_CONN = 4;
+  ACK_REASON_MAX_SUBS_PER_CONN = 5;
+  ACK_REASON_FILTER_TOO_LARGE = 6;
+  ACK_REASON_FILTER_TOO_BROAD = 7;
+  ACK_REASON_NOT_PERMITTED = 8;
+}
+
+message StreamError {
+  ErrorCode code = 1;
+  string message = 2;
+  uint32 retry_after_ms = 3;
+}
+
+enum ErrorCode {
+  ERROR_CODE_UNSPECIFIED = 0;
+  ERROR_CODE_UNKNOWN = 1;
+  ERROR_CODE_INVALID_FILTER = 2;
+  ERROR_CODE_FILTER_TOO_COMPLEX = 3;
+  ERROR_CODE_RATE_LIMITED = 4;
+  ERROR_CODE_QUOTA_EXCEEDED = 5;
+  ERROR_CODE_INTERNAL = 6;
+  ERROR_CODE_UNAVAILABLE = 7;
+  ERROR_CODE_SHUTTING_DOWN = 8;
+  ERROR_CODE_FLOW_CONTROL_LIMITED = 9;
+  ERROR_CODE_RESOURCE_EXHAUSTED = 10;
+  ERROR_CODE_OUT_OF_RANGE = 11;
+}
+
+// Idle keepalive carrying the newest observed slot.
+message Heartbeat {
+  uint64 slot = 1;
+}
+
+// Sent when replay reaches the current live head.
+message ReplayComplete {
+  fixed64 live_seq = 1;
+}
+
+// Marks a skipped sequence range under SKIP_TO_LIVE or CONFLATE.
+message GapNotice {
+  fixed64 from_seq = 1;
+  fixed64 to_seq = 2;
+}
+
+enum TransactionVersion {
+  // Solana transaction formats. This enum does not refer to another proto.
+  TRANSACTION_VERSION_LEGACY = 0;
+  TRANSACTION_VERSION_V0 = 1;
+  TRANSACTION_VERSION_V1 = 2;
+}
+
+// The mask preserves presence when a configured scalar value is zero.
+message TransactionConfig {
+  uint32 mask = 1;
+  uint64 priority_fee = 2;
+  uint32 compute_unit_limit = 3;
+  uint32 loaded_accounts_data_size_limit = 4;
+  uint32 heap_size = 5;
+}
